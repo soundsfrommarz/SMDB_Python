@@ -1,0 +1,209 @@
+import pandas as pd
+import pandas_datareader.data as web
+import datetime as dt
+import numpy as np
+from sqlalchemy import event
+from sqlalchemy import create_engine
+import cProfile
+import io
+import functools
+
+# Static Vars
+pd.set_option('display.max_columns', 10)  # for tuning only can be removed
+pd.set_option('display.width', 200)  # for tuning only can be removed
+Script_start = dt.datetime.now()  # for tuning only can be removed
+
+START_DATE = dt.datetime(2018, 1, 1)
+END_DATE = dt.datetime.now()
+USER, PSSWRD, HOST, DATABASE, TABLE = 'admintest', 'passwordtest', 'localhost', 'stockmarketdb', 'stockmarketdata'
+# #Connect Pandas to SQL STATIC
+
+
+class HistoryGetter:
+
+    def __init__(self, start_date, end_date, user, psswrd, host, database):
+        ### todo: add symbol as arg and check if it's a manual entry or not) ###
+        self.s_d = start_date
+        self.e_d = end_date
+        self.engine = create_engine('mysql+mysqlconnector://' + user + ':' + psswrd + '@' + host + '/' + database)
+
+    @functools.lru_cache(maxsize=None)
+    def get_data(self, how_many, send_to_sql, sql_table_name):
+        counter = 1
+        all_data = pd.DataFrame()
+        failed_symbols = pd.DataFrame()
+        symbols_sql = pd.read_sql("SELECT ID, Symbol, `NASDAQ Symbol` FROM symbols", self.engine) #, index_col='ID')
+        symbols_sql = symbols_sql.iloc[0:how_many]  # truncate size of list for testing
+
+        # Inner functions of get_data - calc_data & send_data
+        def calc_data():
+            try:
+                data.reset_index(inplace=True)
+                data['Volume'] = data['Volume'].replace(0, np.nan)
+                data['AC_Diff'] = data['Adj Close'].diff(1)
+                data['AC_Diffup'] = data['AC_Diff'].mask(data['AC_Diff'] > 0, 0)
+                data['AC_Diffdown'] = data['AC_Diff'].mask(data['AC_Diff'] < 0, 0)
+                data['AC_DiffUma14'] = data['AC_Diffup'].rolling(14, min_periods=0).mean().replace(0, np.nan)
+                data['AC_DiffDma14'] = data['AC_Diffdown'].rolling(14, min_periods=0).mean().replace(0, np.nan)
+                data['RS'] = abs(data['AC_DiffUma14']) / abs(data['AC_DiffDma14'])
+                data['RSI'] = 100. - 100. / (1. + data['RS'])
+                data['ReturnDay'] = data['Adj Close'].pct_change(1, fill_method='ffill')
+                data['ReturnLog'] = np.log(data['Adj Close'] / data['Adj Close'].shift(1))
+                data['Rtrn_Dcumsum'] = data['ReturnDay'].cumsum()
+                data['Rtrn_CSD_Comp'] = (1. + data['ReturnDay']).cumsum()
+                data[['AC_15ma', 'AC_15med']] = data['Adj Close'].rolling(window=15, min_periods=0).agg(
+                    {"AC_15ma": "mean", "AC_15med": "median"})
+                data[['AC_50ma', 'AC_50med']] = data['Adj Close'].rolling(window=50, min_periods=0).agg(
+                    {"AC_50ma": "mean", "AC_50med": "median"})
+                data[['AC_100ma', 'AC_100med']] = data['Adj Close'].rolling(window=100, min_periods=0).agg(
+                    {"AdjClo_100ma": "mean", "AC_100med": "median"})
+                data[['AC_200ma', 'AC_200med']] = data['Adj Close'].rolling(window=200, min_periods=0).agg(
+                    {"AdjClo_200ma": "mean", "AC_200med": "median"})
+                data[['V_15ma', 'V_15med']] = data['Volume'].rolling(window=15, min_periods=0).agg(
+                    {"Vol_15ma": "mean", "V_15med": "median"})
+                data[['V_50ma', 'V_15med']] = data['Volume'].rolling(window=50, min_periods=0).agg(
+                    {"Vol_50ma": "mean", "V_50med": "median"})
+                data[['V_100ma', 'V_15med']] = data['Volume'].rolling(window=100, min_periods=0).agg(
+                    {"Vol_100ma": "mean", "V_100med": "median"})
+                data[['V_200ma', 'V_15med']] = data['Volume'].rolling(window=200, min_periods=0).agg(
+                    {"Vol_200ma": "mean", "V_200med": "median"})
+                data['V_Mave30'] = data['Volume'].expanding(30).mean()
+                data['Vol_diff'] = data['Volume'].diff()
+                data['Vol_diff7'] = data['Volume'].diff(7)
+                data['Vol_diff14'] = data['Volume'].diff(14)
+                data['Vol_PCTch'] = data['Volume'].pct_change(1, fill_method='ffill')
+                data['AC_PCTch'] = data['Adj Close'].pct_change(1, fill_method='ffill')
+                data['AC_PCTch7'] = data['Adj Close'].pct_change(7, fill_method='ffill')
+                data['AC_PCTch14'] = data['Adj Close'].pct_change(7, fill_method='ffill')
+                data['AC_Var7'] = data['Adj Close'].rolling(window=7, min_periods=0).var()
+                data['AC_Var14'] = data['Adj Close'].rolling(window=14, min_periods=0).var()
+                data['AC_STD7'] = data['Adj Close'].rolling(window=7, min_periods=0).std()
+                data['AC_STD14'] = data['Adj Close'].rolling(window=14, min_periods=0).std()
+                data.set_index('Date', inplace=True, drop=True)
+                data['V_PCmon'] = data.groupby([data.index.year, data.index.month])['Volume'].pct_change()
+                data['Vol_diffMoCumS'] = data["Vol_diff"].groupby([data.index.year, data.index.month]).cumsum()
+                data['V_CSWoW'] = data['Vol_PCTch'].groupby(
+                    [data.index.year, data.index.month, pd.DatetimeIndex.isocalendar(
+                        data.index).week]).cumsum()
+                data['V_CSMoM'] = data['Vol_PCTch'].groupby([data.index.year, data.index.month]).cumsum()
+                data['AC_PCchWoW'] = data['Adj Close'].groupby(
+                    [data.index.year, data.index.month, pd.DatetimeIndex.isocalendar(
+                        data.index).week]).apply(lambda x: (x - x[-1]) / x[-1])
+                data['AC_PCTchMoM'] = data['Adj Close'].groupby([data.index.year, data.index.month]).cumsum()
+                data['OC_diff'] = data['Open'] - data['Close']
+                data['OC_diff7ma'] = data['OC_diff'].rolling(window=7, min_periods=0).mean()
+                data['OC_diffMCS'] = data['OC_diff'].groupby([data.index.year, data.index.month]).cumsum()
+                data['OC_diffWCS'] = data['OC_diff'].groupby(
+                    [data.index.year, data.index.month, pd.DatetimeIndex.isocalendar(
+                        data.index).week]).cumsum()
+                data['OC_diffvar7'] = data['OC_diff'].rolling(window=7, min_periods=0).var()
+                data['OC_diffvar50'] = data['OC_diff'].rolling(window=5, min_periods=00).var()
+                data['OC_diffvar100'] = data['OC_diff'].rolling(window=100, min_periods=0).var()
+                data['OC_diffstd7'] = data['OC_diff'].rolling(window=7, min_periods=0).std()
+                data['OC_diffstd50'] = data['OC_diff'].rolling(window=50, min_periods=0).std()
+                data['OC_diffstd100'] = data['OC_diff'].rolling(window=100, min_periods=0).std()
+                data.replace([np.inf, -np.inf], np.nan, inplace=True)
+                print('LOG: Time to complete calc_data: ', dt.datetime.now() - Script_start)
+            except Exception as calc_data_error:
+                print("Calc_data Error....", calc_data_error)
+
+        def send_data(engine, send_to_sql_active, sql_table_name):
+            if send_to_sql_active and not all_data.empty:
+                sql_start = dt.datetime.now()
+                try:
+                    #all_data.to_csv('smdb_loaddata.csv')
+                    print('send_data: sending data to sql')
+                    all_data.to_sql(name=sql_table_name, con=engine, index=True,
+                                    if_exists='append', chunksize=50000, method='multi')
+                    print('send_data: SUCCESS')
+                except Exception as insert_error:
+                    print(insert_error)
+                    failed_sql_insert = pd.DataFrame()
+                    failed_sql_insert = failed_sql_insert.append({
+                        'Error': str(insert_error),
+                        'Attempt': 'Initial creation',
+                        'Date': dt.datetime.now()},
+                        ignore_index=True)
+                    try:
+                        failed_sql_insert.to_sql(name='Failed_Inserts', con=engine, index=True,
+                                                 if_exists='append', chunksize=1000, method='multi')
+                        print('send_data: Failed inserts log sent to sql')
+                    except Exception as send_failed_insert_err:
+                        print(send_failed_insert_err)
+                finally:
+                    if not failed_symbols.empty:
+                        try:
+                            failed_symbols.to_sql(name='Failed Get Symbols', con=engine, index=True,
+                                                  if_exists='append', chunksize=1000, method='multi')
+                        except Exception as send_failed_gets_err:
+                            print(send_failed_gets_err)
+                    print('send_data: get_data failed symbols log sent to SQL')
+                    print('LOG: Time to complete Insert: ', dt.datetime.now() - sql_start)
+
+        for idx, symbol in symbols_sql['Symbol'].iteritems():
+            print(counter)
+            print(all_data.shape)
+            try:
+                # print('getting data for symbol: ' + idx)
+                data = web.DataReader(symbol, 'yahoo', self.s_d, self.e_d, retry_count=2, pause=.5)
+                data[['NASDAQ Symbol Used', 'Symbol UID']] = (0, idx + 1)
+                # should change this so symbols reflect ID number to reduce memory storage for strings
+            except Exception as get_data1:
+                print(get_data1)
+                failed_symbols = failed_symbols.append({
+                    'Symbol': symbol,
+                    'Error': str(get_data1),
+                    'Attempt': 1,
+                    'Date': dt.datetime.now()}, ignore_index=True)
+                # print('LOG: Failed symbol, replacing value and trying again with ', idx2)
+                try:
+                    nasdaq_symbol = symbols_sql.iloc[idx, 2]
+                    data = web.DataReader(nasdaq_symbol, 'yahoo', START_DATE, END_DATE, retry_count=2, pause=.3)
+                    print(symbols_sql.iloc[idx, 2])
+                    data[['NASDAQ Symbol Used', 'Symbol UID']] = (1, idx + 1)
+                    # should change this so symbols reflect ID number to reduce memory storage for strings
+                except Exception as get_data2:
+                    print(get_data2)
+                    failed_symbols = failed_symbols.append({
+                        'Symbol': nasdaq_symbol,
+                        'Error': str(get_data2),
+                        'Attempt': 2,
+                        'Date': dt.datetime.now()}, ignore_index=True)
+                else:
+                    # print(data.head())
+                    calc_data()
+            else:
+                # print(data.head())
+                calc_data()
+            finally:
+                all_data = all_data.append(data, ignore_index=False)
+                # print(counter, ' out of ', len(self.symbols_sql))
+                print(round((counter / len(symbols_sql)) * 100, 2), '%')
+                if counter % 10 == 0:
+                    print(len(all_data))
+                    print(f'sending batch #{counter / 10} to sql')
+                    send_data(self.engine, send_to_sql, sql_table_name)
+                    all_data = pd.DataFrame()  # clears all_data to append next 1000 items
+                counter += 1
+
+        send_data(self.engine, send_to_sql, sql_table_name)  # sends remaining Data
+        print('sending remaining data to sql')
+        # print(all_data.info())
+        print(dt.datetime.now() - Script_start, ': Total')
+
+
+def Create_SMBD():      # will probably belong in the main.py file
+    hg = HistoryGetter(START_DATE, END_DATE, USER, PSSWRD, HOST, DATABASE)  # -1 after engine for all values
+    hg.get_data(2000, True, TABLE)
+
+    # hg.send_data()
+
+    @event.listens_for(hg.engine, "before_cursor_execute")
+    def receive_before_cursor_execute(
+            conn, cursor, statement, params, context, executemany):
+        if executemany:
+            cursor.fast_executemany = True
+
+
+Create_SMBD()
+# cProfile.run('Create_SMBD()', sort=2, filename='../HGprofileclass2')
